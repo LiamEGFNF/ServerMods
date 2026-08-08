@@ -1,5 +1,6 @@
 import socket
 import urllib.request
+import urllib.parse
 import ssl
 import threading
 import time
@@ -7,7 +8,8 @@ import json
 import re
 import os
 
-TOKEN = os.environ.get("DISCORD_TOKEN")
+# 1. Obtenemos el Token desde las variables de entorno de Render
+TOKEN = os.environ.get("DISCORD_TOKEN", "")
 
 CHANNEL_ID = "1527189285491572767"
 
@@ -76,16 +78,17 @@ def procesar_mensajes_discord(raw_json):
 def actualizar_cache_discord():
     global CACHE_MODS
     url = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages?limit=50"
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bot {DISCORD_TOKEN}",
-        "User-Agent": "DiscordBot (https://godotengine.org, v1.0)"
-    })
+    
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
     while True:
         try:
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Bot {TOKEN}", # CORREGIDO: Usamos TOKEN
+                "User-Agent": "DiscordBot (https://godotengine.org, v1.0)"
+            })
             with urllib.request.urlopen(req, context=ctx, timeout=10) as response:
                 raw_data = response.read().decode('utf-8')
                 CACHE_MODS = procesar_mensajes_discord(raw_data)
@@ -96,18 +99,22 @@ def actualizar_cache_discord():
 
 threading.Thread(target=actualizar_cache_discord, daemon=True).start()
 
+# Configuración del Socket HTTP
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
+# CORREGIDO: Escuchar en '0.0.0.0' y usar el puerto dinámico asignado por Render
+PORT = int(os.environ.get("PORT", 8000))
+
 try:
-    server_socket.bind(('127.0.0.1', 8000))
+    server_socket.bind(('0.0.0.0', PORT))
     server_socket.listen(10)
 except Exception as e:
     print(f">>> [ERROR PUERTO] {e}")
     exit()
 
 print("==================================================")
-print(">>> PUENTE LISTO EN http://127.0.0.1:8000")
+print(f">>> PUENTE LISTO EN EL PUERTO {PORT}")
 print("==================================================")
 
 def descargar_imagen_discord(img_url):
@@ -140,13 +147,16 @@ while True:
 
         if path == "/" or path.startswith("/mods"):
             payload = json.dumps(CACHE_MODS).encode('utf-8')
-            headers = f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(payload)}\r\nConnection: close\r\n\r\n"
+            headers = f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {len(payload)}\r\nConnection: close\r\n\r\n"
             client.sendall(headers.encode('utf-8') + payload)
 
         elif path.startswith("/image?url="):
-            img_target_url = path.split("/image?url=")[1]
+            # CORREGIDO: Decodificar los caracteres URL (%3A, %2F, etc.)
+            raw_url = path.split("/image?url=")[1]
+            img_target_url = urllib.parse.unquote(raw_url)
+            
             img_bytes = descargar_imagen_discord(img_target_url)
-            headers = f"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {len(img_bytes)}\r\nConnection: close\r\n\r\n"
+            headers = f"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {len(img_bytes)}\r\nConnection: close\r\n\r\n"
             client.sendall(headers.encode('utf-8') + img_bytes)
 
         client.close()
