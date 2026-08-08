@@ -77,7 +77,7 @@ def procesar_mensajes_discord(raw_json):
 
 def actualizar_cache_discord():
     global CACHE_MODS
-    url = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages?limit=50"
+    "Authorization": f"Bot {TOKEN}",
     
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
