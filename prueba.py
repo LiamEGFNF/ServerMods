@@ -77,7 +77,7 @@ def procesar_mensajes_discord(raw_json):
 
 def actualizar_cache_discord():
     global CACHE_MODS
-    "Authorization": f"Bot {TOKEN}",
+    url = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages?limit=50"
     
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -86,7 +86,7 @@ def actualizar_cache_discord():
     while True:
         try:
             req = urllib.request.Request(url, headers={
-                "Authorization": f"Bot {TOKEN}", # CORREGIDO: Usamos TOKEN
+                "Authorization": f"Bot {TOKEN}",
                 "User-Agent": "DiscordBot (https://godotengine.org, v1.0)"
             })
             with urllib.request.urlopen(req, context=ctx, timeout=10) as response:
