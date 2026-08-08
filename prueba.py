@@ -5,8 +5,10 @@ import threading
 import time
 import json
 import re
+import os
 
-DISCORD_TOKEN = "MTUzNTQxNDkyMTc4ODEzMzQyNw.GBrsAE.ecp1wtm9e5jVWuDAXPD7ZecrGrVxyrMiM_eI40"
+TOKEN = os.environ.get("DISCORD_TOKEN")
+
 CHANNEL_ID = "1527189285491572767"
 
 CACHE_MODS = []
