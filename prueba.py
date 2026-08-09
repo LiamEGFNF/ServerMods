@@ -11,6 +11,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "").strip()
 
+# User-Agent oficial para que Cloudflare deje de bloquear la petición
+USER_AGENT = "DiscordBot (https://github.com, 1.0)"
+
 # Caché en RAM para metadatos
 CACHE_MODS = []
 
@@ -19,14 +22,14 @@ def actualizar_cache_discord():
     while True:
         if DISCORD_TOKEN and CHANNEL_ID:
             try:
-                # Usamos la API v10 de Discord
+                # API v10 de Discord
                 url = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages?limit=50"
                 
                 # Sanitizamos el token por si le metieron la palabra 'Bot ' o espacios de más
                 clean_token = DISCORD_TOKEN.replace("Bot ", "").strip()
                 headers = {
                     "Authorization": f"Bot {clean_token}",
-                    "User-Agent": "Mozilla/5.0"
+                    "User-Agent": USER_AGENT
                 }
                 
                 req = urllib.request.Request(url, headers=headers)
@@ -44,7 +47,6 @@ def actualizar_cache_discord():
                         if not attachments:
                             continue
                         
-                        # Extraer URL firmada fresca
                         img_url = attachments[0].get("url", "")
                         nombre = "Sin título"
                         autor = msg.get("author", {}).get("username", "Anon")
@@ -94,14 +96,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             response = json.dumps(CACHE_MODS)
             self.wfile.write(response.encode('utf-8'))
 
-        # Proxy directo de imágenes (descarga al vuelo sin saturar RAM)
+        # Proxy directo de imágenes
         elif self.path.startswith("/image?url="):
             img_url = self.path.split("/image?url=", 1)[1]
             try:
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                req = urllib.request.Request(img_url, headers={"User-Agent": USER_AGENT})
                 
                 with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
                     img_bytes = res.read()
@@ -119,7 +121,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Silenciar peticiones individuales para no llenar la consola
+        return
 
 def run():
     port = int(os.environ.get("PORT", 10000))
