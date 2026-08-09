@@ -1,164 +1,122 @@
-import socket
+import os
+import json
+import time
 import urllib.request
-import urllib.parse
 import ssl
 import threading
-import time
-import json
-import re
-import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# 1. Obtenemos el Token desde las variables de entorno de Render
-TOKEN = os.environ.get("DISCORD_TOKEN", "")
+# Variables de entorno configuradas en Render
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
 
-CHANNEL_ID = "1527189285491572767"
-
+# Caché global únicamente para metadatos (JSON ligero en RAM)
 CACHE_MODS = []
-CACHE_IMAGENES = {}
-
-def procesar_mensajes_discord(raw_json):
-    mods = []
-    try:
-        mensajes = json.loads(raw_json)
-        if not isinstance(mensajes, list):
-            return []
-
-        for msg in mensajes:
-            content = msg.get("content", "")
-            attachments = msg.get("attachments", [])
-
-            # Buscar imagen adjunta OBLIGATORIA (.png, .jpg, etc.)
-            img_url = ""
-            for att in attachments:
-                url = att.get("url", "")
-                ext = url.split("?")[0].split(".")[-1].lower()
-                if ext in ["png", "jpg", "jpeg", "webp"]:
-                    img_url = url
-                    break
-
-            # SI NO TIENE IMAGEN PNG, SE IGNORA COMPLETAMENTE EL MOD
-            if not img_url:
-                continue
-
-            if "nombre:" not in content.lower():
-                continue
-
-            bloques = re.split(r'(?i)(?=Nombre:)', content)
-
-            for bloque in bloques:
-                if not bloque.strip() or "nombre:" not in bloque.lower():
-                    continue
-
-                nom_match = re.search(r"Nombre:\s*(.+)", bloque, re.IGNORECASE)
-                aut_match = re.search(r"Autor:\s*(.+)", bloque, re.IGNORECASE)
-                desc_match = re.search(r"Descripcion:\s*(.+)", bloque, re.IGNORECASE)
-
-                nombre = nom_match.group(1).split("\n")[0].strip() if nom_match else ""
-                autor = aut_match.group(1).split("\n")[0].strip() if aut_match else msg.get("author", {}).get("username", "Desconocido")
-                descripcion = desc_match.group(1).split("\n")[0].strip() if desc_match else ""
-
-                # Limpieza de paréntesis o formato sobrante
-                nombre = re.sub(r'^\((.*)\)$', r'\1', nombre)
-                autor = re.sub(r'^\((.*)\)$', r'\1', autor)
-                descripcion = re.sub(r'^\((.*)\)$', r'\1', descripcion)
-
-                if nombre:
-                    mods.append({
-                        "nombre": nombre[:20],
-                        "autor": autor[:15],
-                        "descripcion": descripcion[:70],
-                        "zip_url": img_url,
-                        "imagen_url": img_url
-                    })
-    except Exception as e:
-        print(f">>> [PARSER ERROR] {e}")
-
-    return mods
 
 def actualizar_cache_discord():
     global CACHE_MODS
-    url = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages?limit=50"
-    
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
     while True:
-        try:
-            req = urllib.request.Request(url, headers={
-                "Authorization": f"Bot {TOKEN}",
-                "User-Agent": "DiscordBot (https://godotengine.org, v1.0)"
-            })
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as response:
-                raw_data = response.read().decode('utf-8')
-                CACHE_MODS = procesar_mensajes_discord(raw_data)
-                print(f">>> [CACHÉ] ¡{len(CACHE_MODS)} mods con PNG válido cargados!")
-        except Exception as e:
-            print(f">>> [CACHÉ ERROR] {e}")
+        if DISCORD_TOKEN and CHANNEL_ID:
+            try:
+                url = f"https://discord.com/api/v9/channels/{CHANNEL_ID}/messages?limit=50"
+                headers = {
+                    "Authorization": f"Bot {DISCORD_TOKEN}",
+                    "User-Agent": "Mozilla/5.0"
+                }
+                req = urllib.request.Request(url, headers=headers)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
+                    data = json.loads(res.read().decode('utf-8'))
+                    
+                    nuevos_mods = []
+                    for msg in data:
+                        content = msg.get("content", "")
+                        attachments = msg.get("attachments", [])
+                        if not attachments:
+                            continue
+                        
+                        # Obtener la URL firmada fresca del adjunto
+                        img_url = attachments[0].get("url", "")
+                        
+                        nombre = "Sin título"
+                        autor = msg.get("author", {}).get("username", "Anon")
+                        descripcion = content
+
+                        lines = content.split("\n")
+                        for line in lines:
+                            if line.lower().startswith("nombre:"):
+                                nombre = line.split(":", 1)[1].strip()
+                            elif line.lower().startswith("autor:"):
+                                autor = line.split(":", 1)[1].strip()
+                            elif line.lower().startswith("descripcion:"):
+                                descripcion = line.split(":", 1)[1].strip()
+
+                        nuevos_mods.append({
+                            "nombre": nombre,
+                            "autor": autor,
+                            "descripcion": descripcion,
+                            "imagen_url": img_url
+                        })
+
+                    CACHE_MODS = nuevos_mods
+            except Exception as e:
+                print(f">>> [ERROR DISCORD CACHE] {e}")
+        else:
+            print(">>> [WARN] DISCORD_TOKEN o CHANNEL_ID no estan configurados en las Variables de Entorno.")
+
         time.sleep(30)
 
-threading.Thread(target=actualizar_cache_discord, daemon=True).start()
+class ProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # 1. Endpoint para entregar el JSON con la lista de mods
+        if self.path == "/mods":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            response = json.dumps(CACHE_MODS)
+            self.wfile.write(response.encode('utf-8'))
 
-# Configuración del Socket HTTP
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # 2. Endpoint Proxy para imágenes (Descarga al vuelo, CERO consumo residual de RAM)
+        elif self.path.startswith("/image?url="):
+            img_url = self.path.split("/image?url=", 1)[1]
+            try:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as res:
+                    img_bytes = res.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(img_bytes)
+            except Exception as e:
+                print(f">>> [ERROR PROXY IMAGEN] {e}")
+                self.send_response(500)
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-# CORREGIDO: Escuchar en '0.0.0.0' y usar el puerto dinámico asignado por Render
-PORT = int(os.environ.get("PORT", 8000))
+    def log_message(self, format, *args):
+        return  # Desactivar logs basura en la consola de Render
 
-try:
-    server_socket.bind(('0.0.0.0', PORT))
-    server_socket.listen(10)
-except Exception as e:
-    print(f">>> [ERROR PUERTO] {e}")
-    exit()
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    
+    # Hilo secundario para refrescar el caché de Discord sin bloquear las peticiones
+    t = threading.Thread(target=actualizar_cache_discord, daemon=True)
+    t.start()
 
-print("==================================================")
-print(f">>> PUENTE LISTO EN EL PUERTO {PORT}")
-print("==================================================")
+    print(f"==> Servidor activo en puerto {port}")
+    server = HTTPServer(("0.0.0.0", port), ProxyHandler)
+    server.serve_forever()
 
-def descargar_imagen_discord(img_url):
-    if not img_url: return b""
-    if img_url in CACHE_IMAGENES: return CACHE_IMAGENES[img_url]
-
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, context=ctx, timeout=8) as res:
-            data = res.read()
-            CACHE_IMAGENES[img_url] = data
-            return data
-    except Exception as e:
-        print(f">>> [ERROR IMAGEN] {e}")
-        return b""
-
-while True:
-    try:
-        client, addr = server_socket.accept()
-        request_data = client.recv(2048).decode('utf-8', errors='ignore')
-        if not request_data:
-            client.close()
-            continue
-
-        primera_linea = request_data.split('\r\n')[0]
-        path = primera_linea.split(' ')[1] if len(primera_linea.split(' ')) > 1 else "/"
-
-        if path == "/" or path.startswith("/mods"):
-            payload = json.dumps(CACHE_MODS).encode('utf-8')
-            headers = f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {len(payload)}\r\nConnection: close\r\n\r\n"
-            client.sendall(headers.encode('utf-8') + payload)
-
-        elif path.startswith("/image?url="):
-            # CORREGIDO: Decodificar los caracteres URL (%3A, %2F, etc.)
-            raw_url = path.split("/image?url=")[1]
-            img_target_url = urllib.parse.unquote(raw_url)
-            
-            img_bytes = descargar_imagen_discord(img_target_url)
-            headers = f"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {len(img_bytes)}\r\nConnection: close\r\n\r\n"
-            client.sendall(headers.encode('utf-8') + img_bytes)
-
-        client.close()
-    except Exception:
-        pass
+if __name__ == "__main__":
+    run()
