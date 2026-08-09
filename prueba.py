@@ -2,15 +2,16 @@ import os
 import json
 import time
 import urllib.request
+import urllib.error
 import ssl
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Variables de entorno configuradas en Render
-DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "")
+# Variables de entorno en Render
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "").strip()
 
-# Caché global únicamente para metadatos (JSON ligero en RAM)
+# Caché en RAM para metadatos
 CACHE_MODS = []
 
 def actualizar_cache_discord():
@@ -18,11 +19,16 @@ def actualizar_cache_discord():
     while True:
         if DISCORD_TOKEN and CHANNEL_ID:
             try:
-                url = f"https://discord.com/api/v9/channels/{CHANNEL_ID}/messages?limit=50"
+                # Usamos la API v10 de Discord
+                url = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages?limit=50"
+                
+                # Sanitizamos el token por si le metieron la palabra 'Bot ' o espacios de más
+                clean_token = DISCORD_TOKEN.replace("Bot ", "").strip()
                 headers = {
-                    "Authorization": f"Bot {DISCORD_TOKEN}",
+                    "Authorization": f"Bot {clean_token}",
                     "User-Agent": "Mozilla/5.0"
                 }
+                
                 req = urllib.request.Request(url, headers=headers)
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
@@ -38,9 +44,8 @@ def actualizar_cache_discord():
                         if not attachments:
                             continue
                         
-                        # Obtener la URL firmada fresca del adjunto
+                        # Extraer URL firmada fresca
                         img_url = attachments[0].get("url", "")
-                        
                         nombre = "Sin título"
                         autor = msg.get("author", {}).get("username", "Anon")
                         descripcion = content
@@ -62,16 +67,25 @@ def actualizar_cache_discord():
                         })
 
                     CACHE_MODS = nuevos_mods
+                    print(f">>> [DISCORD OK] Mods cargados con éxito: {len(CACHE_MODS)}", flush=True)
+
+            except urllib.error.HTTPError as e:
+                try:
+                    error_body = e.read().decode('utf-8')
+                except Exception:
+                    error_body = "No se pudo leer la respuesta"
+                print(f">>> [ERROR DISCORD API] Código HTTP: {e.code} | Respuesta de Discord: {error_body}", flush=True)
+
             except Exception as e:
-                print(f">>> [ERROR DISCORD CACHE] {e}")
+                print(f">>> [ERROR DISCORD CACHE] Excepción inesperada: {e}", flush=True)
         else:
-            print(">>> [WARN] DISCORD_TOKEN o CHANNEL_ID no estan configurados en las Variables de Entorno.")
+            print(">>> [WARN] DISCORD_TOKEN o CHANNEL_ID no están configurados en las Variables de Entorno.", flush=True)
 
         time.sleep(30)
 
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # 1. Endpoint para entregar el JSON con la lista de mods
+        # Endpoint para entregar metadatos JSON a Godot
         if self.path == "/mods":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -80,7 +94,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             response = json.dumps(CACHE_MODS)
             self.wfile.write(response.encode('utf-8'))
 
-        # 2. Endpoint Proxy para imágenes (Descarga al vuelo, CERO consumo residual de RAM)
+        # Proxy directo de imágenes (descarga al vuelo sin saturar RAM)
         elif self.path.startswith("/image?url="):
             img_url = self.path.split("/image?url=", 1)[1]
             try:
@@ -97,7 +111,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(img_bytes)
             except Exception as e:
-                print(f">>> [ERROR PROXY IMAGEN] {e}")
+                print(f">>> [ERROR PROXY IMAGEN] {e}", flush=True)
                 self.send_response(500)
                 self.end_headers()
         else:
@@ -105,16 +119,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Desactivar logs basura en la consola de Render
+        return  # Silenciar peticiones individuales para no llenar la consola
 
 def run():
     port = int(os.environ.get("PORT", 10000))
-    
-    # Hilo secundario para refrescar el caché de Discord sin bloquear las peticiones
     t = threading.Thread(target=actualizar_cache_discord, daemon=True)
     t.start()
 
-    print(f"==> Servidor activo en puerto {port}")
+    print(f"==> Servidor activo en puerto {port}", flush=True)
     server = HTTPServer(("0.0.0.0", port), ProxyHandler)
     server.serve_forever()
 
